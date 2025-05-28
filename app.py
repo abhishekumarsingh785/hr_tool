@@ -6,6 +6,7 @@ import pandas as pd
 from io import BytesIO
 from typing import List, Dict
 import json
+import re 
 
 
 OLLAMA_URL = "http://localhost:11434/api/generate"   
@@ -61,34 +62,70 @@ def call_ollama(prompt:str, retries:int=3)->str:
             st.error(f"Ollama call failed: {e}")
             return ""
 
-def analyze_resume(jd:str, res_txt:str)->Dict[str,any]:
-    prompt=f"""
-You are an expert HR recruiter. Compare this resume to the JD and score 0-100.
+def analyze_resume(job_description: str, resume_text: str) -> Dict[str, any]:
+    """
+    Call the LLM, expect JSON, parse it safely.  Fallback to regex if needed.
+    Returns:
+        {"score": int,
+         "strengths": [str, …],
+         "gaps": [str, …],
+         "full": raw_response_text}
+    """
+    prompt = f"""
+You are an expert HR recruiter.
+
+TASK ▸ Compare the resume to the JD and return a JSON object with keys:
+  "score"      – integer 0-100
+  "strengths"  – list of 3 short bullet points
+  "gaps"       – list of missing / weak areas (may be empty)
+
+Return ONLY the JSON.  No markdown fences, no extra text outside the JSON.
 
 Job Description:
-{jd}
+{job_description}
 
 Resume:
-{res_txt}
-
-Return in this exact format:
-SCORE: <number>
-KEY_STRENGTHS:
-- item1
-- item2
-- item3
-GAPS:
-- gap1
-- gap2
+{resume_text}
 """
-    resp = call_ollama(prompt)
-    score      = int(re.search(r'SCORE:\s*(\d+)', resp or "0").group(1))
-    strengths  = re.findall(r'- (.*?)\n', re.search(r'KEY_STRENGTHS:(.*?)(GAPS:|$)',
-                                                    resp, re.S).group(1))
-    gaps_match = re.search(r'GAPS:(.*)$', resp or "", re.S)
-    gaps       = re.findall(r'- (.*?)\n', gaps_match.group(1) if gaps_match else "")
-    return {"score":score,"strengths":strengths,"gaps":gaps,"full":resp}
 
+    raw = call_ollama(prompt)
+    if not raw:                       # network / timeout failure
+        return {"score": 0, "strengths": [], "gaps": [], "full": ""}
+
+    # Sometimes models wrap the JSON in ```json fences – strip them
+    cleaned = re.sub(r"^```json|```$|```", "", raw.strip()).strip()
+
+    # ── 1️⃣  First try JSON parsing
+    try:
+        data = json.loads(cleaned)
+        return {
+            "score": int(data.get("score", 0)),
+            "strengths": data.get("strengths", [])[:3],
+            "gaps": data.get("gaps", []),
+            "full": raw,
+        }
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # ── 2️⃣  Fallback to regex (legacy format)
+        score_match = re.search(r"SCORE:\s*(\d+)", raw)
+        score = int(score_match.group(1)) if score_match else 0
+
+        strengths_match = re.search(
+            r"KEY_STRENGTHS:\s*(.*?)(?:GAPS:|$)", raw, re.S)
+        strengths_block = strengths_match.group(1) if strengths_match else ""
+        strengths = [s.strip("-• \n") for s in strengths_block.splitlines()
+                     if s.strip()][:3]
+
+        gaps_match = re.search(r"GAPS:\s*(.*)", raw, re.S)
+        gaps_block = gaps_match.group(1) if gaps_match else ""
+        gaps = [g.strip("-• \n") for g in gaps_block.splitlines()
+                if g.strip()]
+
+        return {
+            "score": score,
+            "strengths": strengths,
+            "gaps": gaps,
+            "full": raw,
+        }
 def generate_questions(job_description: str,
                        resume_text: str,
                        num_questions: int) -> List[Dict[str, str]]:
