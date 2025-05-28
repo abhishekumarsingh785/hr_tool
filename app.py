@@ -92,10 +92,10 @@ Resume:
     if not raw:                       # network / timeout failure
         return {"score": 0, "strengths": [], "gaps": [], "full": ""}
 
-    # Sometimes models wrap the JSON in ```json fences – strip them
+    
     cleaned = re.sub(r"^```json|```$|```", "", raw.strip()).strip()
 
-    # ── 1️⃣  First try JSON parsing
+    
     try:
         data = json.loads(cleaned)
         return {
@@ -105,7 +105,7 @@ Resume:
             "full": raw,
         }
     except (json.JSONDecodeError, TypeError, ValueError):
-        # ── 2️⃣  Fallback to regex (legacy format)
+        
         score_match = re.search(r"SCORE:\s*(\d+)", raw)
         score = int(score_match.group(1)) if score_match else 0
 
