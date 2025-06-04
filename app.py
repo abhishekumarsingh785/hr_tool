@@ -8,9 +8,7 @@ from typing import List, Dict
 import json
 import re 
 
-
-OLLAMA_URL = "http://localhost:11434/api/generate"   
-MODEL_NAME  = "mistral:7b"                           
+                           
 
 
 st.set_page_config(page_title="HR Recruitment Assistant",
@@ -43,24 +41,41 @@ def extract_contact_info(txt:str)->Dict[str,str]:
             name = l; break
     return {"name":name, "email":email[0] if email else "Not found"}
 
-def call_ollama(prompt:str, retries:int=3)->str:
-    payload = {"model": MODEL_NAME, "prompt": prompt, "stream": False}
-    for i in range(retries):
+import os
+import base64
+import requests
+
+# Reads from secrets.toml or .env on Streamlit Cloud
+OLLAMA_URL  = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/api/generate")
+OLLAMA_USER = os.getenv("OLLAMA_USER", "")
+OLLAMA_PASS = os.getenv("OLLAMA_PASS", "")
+
+def call_ollama(prompt: str, retries: int = 3, **extra_params) -> str:
+    headers = {}
+    
+    # Add Basic Auth if provided
+    if OLLAMA_USER and OLLAMA_PASS:
+        token = base64.b64encode(f"{OLLAMA_USER}:{OLLAMA_PASS}".encode()).decode()
+        headers["Authorization"] = f"Basic {token}"
+
+    payload = {
+        "model": "mistral:7b",   # or any model you use
+        "prompt": prompt,
+        "stream": False
+    }
+    payload.update(extra_params)
+
+    for _ in range(retries):
         try:
-            r = requests.post(OLLAMA_URL, json=payload, timeout=120)
+            r = requests.post(OLLAMA_URL, json=payload, headers=headers, timeout=120)
             if r.status_code == 200:
-                return r.json()["response"]
+                return r.json().get("response", "")
             st.error(f"Ollama error {r.status_code}: {r.text}")
             return ""
-        except requests.exceptions.ConnectionError:
-            if i==retries-1:
-                st.error("Cannot reach Ollama at localhost:11434. "
-                         "Run `ollama serve` in a terminal.")
-                return ""
-            time.sleep(2)
         except Exception as e:
             st.error(f"Ollama call failed: {e}")
             return ""
+
 
 def analyze_resume(job_description: str, resume_text: str) -> Dict[str, any]:
     """
@@ -72,9 +87,20 @@ def analyze_resume(job_description: str, resume_text: str) -> Dict[str, any]:
          "full": raw_response_text}
     """
     prompt = f"""
-You are an expert HR recruiter.
+You are an expert HR recruiter with deep technical and domain expertise across industries.
 
-TASK ▸ Compare the resume to the JD and return a JSON object with keys:
+TASK: Perform a comprehensive analysis comparing the resume to the job description. Evaluate beyond surface-level keyword matching to assess true fit across multiple dimensions.
+
+ANALYSIS FRAMEWORK:
+• Technical Alignment: Evaluate tech stack compatibility, tool proficiency, and technical depth
+• Domain Expertise: Assess industry knowledge, business context understanding, and relevant problem-solving experience  
+• Experience Level: Match seniority, scope of responsibility, and leadership requirements
+• Transferable Skills: Identify relevant skills that may not be exact matches but demonstrate adaptability
+• Project Complexity: Compare scale, complexity, and impact of past work to role requirements
+• Learning Trajectory: Evaluate growth pattern, adaptability, and potential for role evolution
+• Methodologies: Assess familiarity with relevant frameworks, processes, and best practices
+
+Compare the resume to the JD and return a JSON object with keys:
   "score"      – integer 0-100
   "strengths"  – list of 3 short bullet points
   "gaps"       – list of missing / weak areas (may be empty)
@@ -139,10 +165,15 @@ def generate_questions(job_description: str,
     ]
     """
     prompt = f"""
-    You are an expert interviewer.
+    You are an experienced HR interviewer. Generate exactly {num_questions} behavioral interview questions that can be specifically used for screening the candidates:
+    • Open-ended (no yes/no questions)
+    • Specific to the role and candidate background
+    • Designed to assess domain knowledge, and cultural fit
+    • Focused on past experiences and specific examples
 
-    **TASK:** Generate exactly {num_questions} interview questions
-    tailored to the candidate.
+    Examples - 
+    1. How many years of experience do you have in this specific tech stack or doamin?
+    2. What kind of bussines impact did you have?
 
     **FORMAT:** Return ONLY valid JSON – an array where each element
     is an object with keys:
@@ -276,4 +307,3 @@ with tab2:
             st.markdown("### 📝 Generated Interview Questions")
             for i, q in enumerate(questions, 1):
                 st.markdown(f"**Question {i}:** {q['question']}")
-
